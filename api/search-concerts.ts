@@ -63,8 +63,12 @@ export default async function handler(req: Request) {
 
   if (!anthropicRes.ok) {
     const errText = await anthropicRes.text();
+    console.error('Anthropic API error:', anthropicRes.status, errText);
     return new Response(
-      JSON.stringify({ error: `Upstream error: ${anthropicRes.status}` }),
+      JSON.stringify({
+        error: `Upstream error: ${anthropicRes.status}`,
+        detail: errText.slice(0, 200),
+      }),
       { status: 502, headers: { 'Content-Type': 'application/json' } },
     );
   }
