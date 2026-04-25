@@ -2,8 +2,6 @@ import { waitUntil } from '@vercel/functions';
 import { getCachedSearch, storeConcerts } from './concert-cache';
 import type { ConcertResult } from './types';
 
-export const config = { runtime: 'edge' };
-
 // Simple in-memory rate limiter (resets on cold starts)
 const RATE_LIMIT = 20;
 const RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
