@@ -1,6 +1,6 @@
 import { waitUntil } from '@vercel/functions';
-import { getCachedSearch, storeConcerts } from './concert-cache';
-import type { ConcertResult } from './types';
+import { getCachedSearch, storeConcerts } from './concert-cache.js';
+import type { ConcertResult } from './types.js';
 
 // Simple in-memory rate limiter (resets on cold starts)
 const RATE_LIMIT = 20;

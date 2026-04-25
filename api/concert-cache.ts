@@ -1,5 +1,5 @@
-import { sql } from './db';
-import type { ConcertResult } from './types';
+import { sql } from './db.js';
+import type { ConcertResult } from './types.js';
 
 function normalize(s: string): string {
   return s.toLowerCase().trim();
