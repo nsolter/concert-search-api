@@ -1,4 +1,5 @@
 import { waitUntil } from '@vercel/functions';
+import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getCachedSearch, storeConcerts } from './concert-cache.js';
 import type { ConcertResult } from './types.js';
 
@@ -38,50 +39,32 @@ Return a JSON array where each entry has these fields:
 
 Return ONLY the raw JSON array, no markdown fences, no commentary. Include all concerts you find evidence for, even if some details like time are missing — just leave those fields as empty strings. Only omit a concert if you have reason to believe it didn't happen.`;
 
-export default async function handler(req: Request) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
-    return new Response('Method not allowed', { status: 405 });
+    return res.status(405).send('Method not allowed');
   }
 
-  const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+  const forwarded = req.headers['x-forwarded-for'];
+  const ip = (Array.isArray(forwarded) ? forwarded[0] : forwarded?.split(',')[0]?.trim()) ?? 'unknown';
   const rateCheck = checkRateLimit(ip);
-  const rateLimitHeaders = {
-    'Content-Type': 'application/json',
-    'X-RateLimit-Limit': String(RATE_LIMIT),
-    'X-RateLimit-Remaining': String(rateCheck.remaining),
-    'X-RateLimit-Reset': String(Math.ceil(rateCheck.resetAt / 1000)),
-  };
+
+  res.setHeader('X-RateLimit-Limit', String(RATE_LIMIT));
+  res.setHeader('X-RateLimit-Remaining', String(rateCheck.remaining));
+  res.setHeader('X-RateLimit-Reset', String(Math.ceil(rateCheck.resetAt / 1000)));
 
   if (!rateCheck.allowed) {
-    return new Response(
-      JSON.stringify({ error: 'Rate limit exceeded. Try again later.' }),
-      { status: 429, headers: rateLimitHeaders },
-    );
+    return res.status(429).json({ error: 'Rate limit exceeded. Try again later.' });
   }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    return new Response(JSON.stringify({ error: 'Server misconfigured' }), {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    return res.status(500).json({ error: 'Server misconfigured' });
   }
 
-  let body: { artist?: string; location?: string; year?: string; mode?: string };
-  try {
-    body = await req.json();
-  } catch {
-    return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-
-  if (!body.artist?.trim() || !body.location?.trim()) {
-    return new Response(JSON.stringify({ error: 'artist and location are required' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' },
-    });
+  // VercelRequest auto-parses JSON bodies; body is undefined if parsing fails
+  const body = req.body as { artist?: string; location?: string; year?: string; mode?: string } | undefined;
+  if (!body?.artist?.trim() || !body?.location?.trim()) {
+    return res.status(400).json({ error: 'artist and location are required' });
   }
 
   const artist = body.artist.trim();
@@ -93,10 +76,8 @@ export default async function handler(req: Request) {
   try {
     const cached = await getCachedSearch(artist, location, year);
     if (cached && (cached.isDeep || !isDeep)) {
-      return new Response(JSON.stringify(cached.concerts), {
-        status: 200,
-        headers: { ...rateLimitHeaders, 'X-Cache': 'HIT' },
-      });
+      res.setHeader('X-Cache', 'HIT');
+      return res.status(200).json(cached.concerts);
     }
   } catch {
     // DB unavailable — fall through to Claude
@@ -128,19 +109,16 @@ export default async function handler(req: Request) {
 
   if (!anthropicRes.ok) {
     const errText = await anthropicRes.text();
-    return new Response(
-      JSON.stringify({
-        error: `Upstream error: ${anthropicRes.status}`,
-        detail: errText.slice(0, 200),
-      }),
-      { status: 502, headers: { 'Content-Type': 'application/json' } },
-    );
+    return res.status(502).json({
+      error: `Upstream error: ${anthropicRes.status}`,
+      detail: errText.slice(0, 200),
+    });
   }
 
-  const data = await anthropicRes.json();
+  const data = await anthropicRes.json() as { content: Array<{ type: string; text?: string }> };
 
   // Concatenate ALL text blocks — with web search, the JSON may be in a later text block
-  const allText = (data.content as Array<{ type: string; text?: string }>)
+  const allText = data.content
     .filter(c => c.type === 'text' && c.text)
     .map(c => c.text!)
     .join('\n');
@@ -151,7 +129,6 @@ export default async function handler(req: Request) {
   if (fencedMatch) {
     jsonStr = fencedMatch[1].trim();
   } else {
-    // Find the first [...] in the text
     const bracketMatch = allText.match(/\[[\s\S]*\]/);
     if (bracketMatch) {
       jsonStr = bracketMatch[0];
@@ -160,7 +137,7 @@ export default async function handler(req: Request) {
 
   let concerts: ConcertResult[];
   try {
-    const parsed = JSON.parse(jsonStr);
+    const parsed = JSON.parse(jsonStr) as unknown;
     if (!Array.isArray(parsed)) throw new Error('not an array');
     concerts = parsed.map((c: Record<string, unknown>, i: number) => ({
       id: `c-${i}-${Date.now()}`,
@@ -178,8 +155,6 @@ export default async function handler(req: Request) {
   // Store in the background so the response is not delayed.
   waitUntil(storeConcerts(artist, location, year, isDeep, concerts).catch(() => {}));
 
-  return new Response(JSON.stringify(concerts), {
-    status: 200,
-    headers: { ...rateLimitHeaders, 'X-Cache': 'MISS' },
-  });
+  res.setHeader('X-Cache', 'MISS');
+  return res.status(200).json(concerts);
 }
