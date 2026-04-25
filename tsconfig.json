@@ -7,7 +7,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
-    "outDir": "dist"
+    "outDir": "dist",
+    "types": ["node"],
+    "ignoreDeprecations": "6.0"
   },
   "include": ["api/**/*.ts"]
 }

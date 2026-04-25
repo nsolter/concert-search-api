@@ -1,3 +1,5 @@
+import { waitUntil } from '@vercel/functions';
+import { getCachedSearch, storeConcerts } from './concert-cache';
 import type { ConcertResult } from './types';
 
 export const config = { runtime: 'edge' };
@@ -84,11 +86,29 @@ export default async function handler(req: Request) {
     });
   }
 
-  const maxWebSearches = body.mode === 'quick' ? 2 : 5;
+  const artist = body.artist.trim();
+  const location = body.location.trim();
+  const year = body.year?.trim() || undefined;
+  const isDeep = body.mode !== 'quick';
 
-  const parts: string[] = [`Artist: ${body.artist.trim()}`];
-  if (body.location?.trim()) parts.push(`Location: ${body.location.trim()}`);
-  if (body.year?.trim()) parts.push(`Year: ${body.year.trim()}`);
+  // Return cached results if we have them at sufficient depth.
+  try {
+    const cached = await getCachedSearch(artist, location, year);
+    if (cached && (cached.isDeep || !isDeep)) {
+      return new Response(JSON.stringify(cached.concerts), {
+        status: 200,
+        headers: { ...rateLimitHeaders, 'X-Cache': 'HIT' },
+      });
+    }
+  } catch {
+    // DB unavailable — fall through to Claude
+  }
+
+  const maxWebSearches = isDeep ? 5 : 2;
+
+  const parts: string[] = [`Artist: ${artist}`];
+  parts.push(`Location: ${location}`);
+  if (year) parts.push(`Year: ${year}`);
 
   const userMessage = parts.join('\n');
 
@@ -157,8 +177,11 @@ export default async function handler(req: Request) {
     concerts = [];
   }
 
+  // Store in the background so the response is not delayed.
+  waitUntil(storeConcerts(artist, location, year, isDeep, concerts).catch(() => {}));
+
   return new Response(JSON.stringify(concerts), {
     status: 200,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...rateLimitHeaders, 'X-Cache': 'MISS' },
   });
 }
